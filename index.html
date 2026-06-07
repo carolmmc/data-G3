@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>解构节奏 | Spotify 音乐数据分析</title>
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        spotify: '#1DB954',
+                        spotifyHover: '#1ed760',
+                        bgDark: '#121212',
+                        bgDarker: '#000000',
+                        cardBg: '#181818',
+                        textGray: '#b3b3b3'
+                    },
+                    fontFamily: {
+                        sans: ['Helvetica Neue', 'Arial', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* 全局及滚动条 */
+        body {
+            background-color: #000000;
+            color: white;
+            overflow-x: hidden;
+        }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #121212; }
+        ::-webkit-scrollbar-thumb { background: #535353; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #b3b3b3; }
+
+        /* 入场动画 */
+        .fade-up {
+            opacity: 0; transform: translateY(30px);
+            transition: opacity 1s ease-out, transform 1s ease-out;
+        }
+        .fade-up.visible { opacity: 1; transform: translateY(0); }
+
+        /* ================= 扑克牌核心样式 ================= */
+        .playing-card {
+            position: absolute;
+            width: 240px;
+            height: 340px;
+            border-radius: 16px;
+            background-color: #181818;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            overflow: hidden;
+            cursor: pointer;
+            transform: translate(var(--tx), var(--ty)) scale(var(--s)) rotate(var(--r));
+            z-index: var(--z);
+            transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1), filter 0.6s ease;
+            transform-origin: center bottom;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.6);
+        }
+        @media (min-width: 768px) {
+            .playing-card { width: 280px; height: 400px; }
+        }
+        .playing-card img {
+            width: 100%; height: 100%; object-fit: cover;
+            transition: transform 0.6s ease; position: relative; z-index: 1;
+        }
+        .playing-card:not(.is-active):hover {
+            --ty: calc(var(--base-ty) - 30px) !important;
+            --s: 1.05 !important;
+            filter: brightness(1) drop-shadow(0 0 20px rgba(29, 185, 84, 0.4)) !important;
+            z-index: 40 !important;
+        }
+        .genre-data {
+            position: absolute; inset: 0;
+            background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.7) 50%, rgba(0,0,0,0.2) 100%);
+            display: flex; flex-direction: column; justify-content: flex-end; padding: 24px;
+            opacity: 0; pointer-events: none; transition: opacity 0.4s ease; z-index: 20;
+        }
+        .playing-card.is-active:hover .genre-data { opacity: 1; pointer-events: auto; }
+        .playing-card.is-active:hover img { transform: scale(1.1); }
+        .card-title-bar {
+            position: absolute; bottom: 0; left: 0; width: 100%; padding: 20px;
+            background: linear-gradient(to top, rgba(0,0,0,0.9), transparent);
+            transition: opacity 0.3s; z-index: 10;
+        }
+        .playing-card.is-active:hover .card-title-bar { opacity: 0; }
+        .tag-pill {
+            display: inline-block; padding: 4px 10px;
+            background-color: rgba(29, 185, 84, 0.15); color: #1DB954;
+            border: 1px solid rgba(29, 185, 84, 0.4); border-radius: 9999px;
+            font-size: 0.75rem; font-weight: 600; margin-right: 6px; margin-bottom: 6px;
+        }
+        .glow-bg {
+            position: absolute; top: -10%; left: 50%; transform: translateX(-50%);
+            width: 100vw; height: 100vh;
+            background: radial-gradient(circle, rgba(29, 185, 84, 0.12) 0%, rgba(0,0,0,0) 60%);
+            z-index: -1; pointer-events: none;
+        }
+
+        /* ================= 歌手气泡特效 ================= */
+        .bubble-container {
+            position: relative;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            gap: 2.5rem;
+            padding: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .artist-bubble {
+            position: relative;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.4s ease;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+            /* 轻微的上下浮动动画 */
+            animation: float-bubble 6s ease-in-out infinite;
+        }
+        .artist-bubble:hover {
+            transform: scale(1.1) translateY(-10px) !important;
+            box-shadow: 0 15px 35px rgba(29, 185, 84, 0.3);
+            z-index: 10;
+        }
+        
+        .bubble-img-wrapper {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            overflow: hidden;
+            position: relative;
+            border: 3px solid transparent;
+            transition: border-color 0.3s ease;
+            background: #181818;
+        }
+
+        .artist-bubble img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            position: relative;
+            z-index: 2;
+        }
+
+        /* 歌手名字与歌曲标签 */
+        .artist-label {
+            position: absolute;
+            bottom: -40px;
+            left: 50%;
+            transform: translateX(-50%);
+            white-space: nowrap;
+            text-align: center;
+            transition: opacity 0.3s, color 0.3s;
+            pointer-events: none;
+        }
+        
+        .artist-name {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #b3b3b3;
+            transition: color 0.3s ease;
+        }
+        
+        .artist-bubble:hover .artist-name { color: #fff; }
+
+        .song-title {
+            font-size: 0.75rem;
+            color: #1DB954;
+            height: 0;
+            opacity: 0;
+            overflow: hidden;
+            transition: height 0.3s ease, opacity 0.3s ease, margin-top 0.3s ease;
+        }
+
+        /* 播放时的状态 */
+        .artist-bubble.is-playing .bubble-img-wrapper {
+            border-color: #1DB954;
+            box-shadow: 0 0 30px rgba(29, 185, 84, 0.6);
+            /* 模拟黑胶唱片旋转 */
+            animation: spin-record 10s linear infinite;
+        }
+        .artist-bubble.is-playing .artist-name {
+            color: #1DB954;
+        }
+        .artist-bubble.is-playing .song-title {
+            height: 1.2rem;
+            opacity: 1;
+            margin-top: 4px;
+        }
+
+        /* 浮动动画 */
+        @keyframes float-bubble {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-15px); }
+        }
+        @keyframes spin-record {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .delay-1 { animation-delay: 0s; }
+        .delay-2 { animation-delay: 1s; }
+        .delay-3 { animation-delay: 2s; }
+        .delay-4 { animation-delay: 0.5s; }
+        .delay-5 { animation-delay: 1.5s; }
+
+        /* 模拟音频波纹指示器 */
+        .playing-indicator {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+            gap: 3px;
+            z-index: 10;
+            background: rgba(0,0,0,0.6);
+            padding: 12px;
+            border-radius: 50%;
+            pointer-events: none;
+        }
+        .artist-bubble.is-playing .playing-indicator {
+            display: flex;
+        }
+        .playing-indicator span {
+            display: block; width: 4px; background: #1DB954; border-radius: 2px;
+            animation: eq-play 1s infinite ease-in-out;
+        }
+        .playing-indicator span:nth-child(1) { height: 10px; animation-delay: 0s; }
+        .playing-indicator span:nth-child(2) { height: 20px; animation-delay: 0.2s; }
+        .playing-indicator span:nth-child(3) { height: 15px; animation-delay: 0.4s; }
+        @keyframes eq-play { 0%, 100% { height: 8px; } 50% { height: 24px; } }
+
+    </style>
+</head>
+<body class="font-sans antialiased text-white selection:bg-spotify selection:text-black">
+
+    <!-- 全局音频播放器 (隐藏) -->
+    <audio id="global-audio-player"></audio>
+
+    <!-- 开屏点击进入动画层 (替代原先的自动加载) -->
+    <div id="start-screen" class="fixed inset-0 bg-black z-[9999] flex flex-col items-center justify-center transition-opacity duration-700">
+        <!-- 类似Spotify风格的图标 -->
+        <svg viewBox="0 0 24 24" fill="#1DB954" class="w-24 h-24 mb-8">
+            <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.84.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.02.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.6.18-1.2.72-1.38 4.26-1.26 11.28-1.02 15.72 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+        </svg>
+        <h1 class="text-4xl md:text-6xl font-extrabold mb-4 tracking-tight">解构节奏</h1>
+        <p class="text-textGray mb-12 tracking-widest text-sm md:text-base font-mono uppercase">Spotify Music Data Analysis</p>
+        <button id="enter-btn" class="bg-spotify hover:bg-spotifyHover text-black font-bold py-4 px-12 rounded-full text-lg transition-all transform hover:scale-105 shadow-[0_0_20px_rgba(29,185,84,0.2)] hover:shadow-[0_0_40px_rgba(29,185,84,0.5)] tracking-wider">
+            点击开启探索
+        </button>
+    </div>
+
+    <!-- 页面主体 -->
+    <main id="main-content" class="relative hidden flex-col items-center w-full min-h-screen">
+        <div class="glow-bg"></div>
+
+        <nav class="w-full max-w-7xl mx-auto px-6 py-6 flex justify-between items-center z-10 relative">
+            <div class="text-xl font-bold tracking-tighter flex items-center gap-2">
+                <svg viewBox="0 0 24 24" fill="#1DB954" class="w-6 h-6"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.84.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.02.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.6.18-1.2.72-1.38 4.26-1.26 11.28-1.02 15.72 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+                Group 3
+            </div>
+        </nav>
+
+        <section class="w-full max-w-7xl mx-auto px-6 pt-10 pb-4 flex flex-col items-center text-center z-10 fade-up">
+            <h1 class="text-4xl md:text-6xl font-extrabold tracking-tight mb-4 leading-tight">
+                解构节奏 <br>
+                <span class="text-transparent bg-clip-text bg-gradient-to-r from-spotify to-blue-400">探寻音乐的数字密码</span>
+            </h1>
+            <p class="text-textGray text-base md:text-lg max-w-2xl">
+                我们将海量曲目划分为六大核心流派。透过听觉的表象，用多维度音频特征数据揭示它们的底层DNA。
+            </p>
+        </section>
+
+        <!-- ================= 扑克牌交互区 ================= -->
+        <section class="w-full relative h-[450px] md:h-[550px] mt-8 flex justify-center items-center overflow-hidden mb-12 fade-up" id="card-deck-container">
+            <!-- 卡片 1: Pop -->
+            <div class="playing-card" data-index="0">
+                <img src="./Pop.png" alt="Pop Music" onerror="this.style.display='none'">
+                <div class="card-title-bar"><h3 class="text-2xl font-bold">Pop <span class="text-sm font-normal text-gray-300 ml-1">流行</span></h3></div>
+                <div class="genre-data">
+                    <h3 class="text-3xl font-extrabold mb-2 text-white">Pop</h3>
+                    <p class="text-sm text-gray-300 mb-4 leading-relaxed">旋律抓耳，结构清晰。作为受众最广的流派，它巧妙平衡了节奏与旋律，各项音频特征往往处于最易被大众接受的“黄金区间”。</p>
+                    <div class="flex flex-wrap"><span class="tag-pill">高愉悦度</span><span class="tag-pill">受众极广</span><span class="tag-pill">特征均衡</span></div>
+                </div>
+            </div>
+
+            <!-- 卡片 2: Latin -->
+            <div class="playing-card" data-index="1">
+                <img src="./Latin.png" alt="Latin Music" onerror="this.style.display='none'">
+                <div class="card-title-bar"><h3 class="text-2xl font-bold">Latin <span class="text-sm font-normal text-gray-300 ml-1">拉丁</span></h3></div>
+                <div class="genre-data">
+                    <h3 class="text-3xl font-extrabold mb-2 text-white">Latin</h3>
+                    <p class="text-sm text-gray-300 mb-4 leading-relaxed">充满激情的切分节奏与热情的打击乐。拉丁音乐的律动感极强，数据上往往呈现出极高的舞动度与饱满的情绪能量。</p>
+                    <div class="flex flex-wrap"><span class="tag-pill">极高舞动度</span><span class="tag-pill">热情奔放</span></div>
+                </div>
+            </div>
+
+            <!-- 卡片 3: R&B -->
+            <div class="playing-card" data-index="2">
+                <img src="./R&B.png" alt="R&B Music" onerror="this.style.display='none'">
+                <div class="card-title-bar"><h3 class="text-2xl font-bold">R&B <span class="text-sm font-normal text-gray-300 ml-1">节奏布鲁斯</span></h3></div>
+                <div class="genre-data">
+                    <h3 class="text-3xl font-extrabold mb-2 text-white">R&B</h3>
+                    <p class="text-sm text-gray-300 mb-4 leading-relaxed">丝滑的声线与深情的律动交织。R&B 在数据上通常表现出适中的能量值，更注重原声乐器与人声的融合，情绪表达细腻。</p>
+                    <div class="flex flex-wrap"><span class="tag-pill">原声度高</span><span class="tag-pill">律动平滑</span></div>
+                </div>
+            </div>
+
+            <!-- 卡片 4: Rock -->
+            <div class="playing-card" data-index="3">
+                <img src="./Rock.png" alt="Rock Music" onerror="this.style.display='none'">
+                <div class="card-title-bar"><h3 class="text-2xl font-bold">Rock <span class="text-sm font-normal text-gray-300 ml-1">摇滚</span></h3></div>
+                <div class="genre-data">
+                    <h3 class="text-3xl font-extrabold mb-2 text-white">Rock</h3>
+                    <p class="text-sm text-gray-300 mb-4 leading-relaxed">强烈的吉他失真与有力的鼓点。充满反叛与力量，其音频特征的显著标志是极高的能量值与响度，以及极低的原声度。</p>
+                    <div class="flex flex-wrap"><span class="tag-pill">极高能量</span><span class="tag-pill">高响度</span><span class="tag-pill">现场感强</span></div>
+                </div>
+            </div>
+
+            <!-- 卡片 5: Rap -->
+            <div class="playing-card" data-index="4">
+                <img src="./Rap.png" alt="Rap Music" onerror="this.style.display='none'">
+                <div class="card-title-bar"><h3 class="text-2xl font-bold">Rap <span class="text-sm font-normal text-gray-300 ml-1">说唱</span></h3></div>
+                <div class="genre-data">
+                    <h3 class="text-3xl font-extrabold mb-2 text-white">Rap</h3>
+                    <p class="text-sm text-gray-300 mb-4 leading-relaxed">强调节拍与人声的密集输出。在音频数据上，Rap 曲目通常拥有极高的“语言度（Speechiness）”和扎实的低音律动。</p>
+                    <div class="flex flex-wrap"><span class="tag-pill">高语言度</span><span class="tag-pill">密集节奏</span></div>
+                </div>
+            </div>
+
+            <!-- 卡片 6: EDM -->
+            <div class="playing-card" data-index="5">
+                <img src="./EDM.png" alt="EDM Music" onerror="this.style.display='none'">
+                <div class="card-title-bar"><h3 class="text-2xl font-bold">EDM <span class="text-sm font-normal text-gray-300 ml-1">电子舞曲</span></h3></div>
+                <div class="genre-data">
+                    <h3 class="text-3xl font-extrabold mb-2 text-white">EDM</h3>
+                    <p class="text-sm text-gray-300 mb-4 leading-relaxed">完全由合成器与电子节拍构建的音景，专为舞池而生。它完美融合了巅峰级别的舞动度与持续的高能量输出。</p>
+                    <div class="flex flex-wrap"><span class="tag-pill">极致舞动</span><span class="tag-pill">高能量</span></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= 新增：歌手热度气泡播放区 ================= -->
+        <section class="w-full max-w-7xl mx-auto px-4 py-16 fade-up border-t border-[#222]">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl font-bold mb-3 tracking-wide">巨星引力场</h2>
+                <p class="text-textGray">气泡大小代表该歌手在数据池中的热度权重。<br>
+                    <span class="text-spotify font-semibold">点击头像，即可试听他们的全球现象级爆款代表作。</span>
+                </p>
+            </div>
+
+            <!-- 气泡容器，由JS动态生成内容 -->
+            <div id="bubbles-wrapper" class="bubble-container">
+                <!-- JS将会在这里插入气泡 -->
+            </div>
+
+        <footer class="w-full border-t border-[#222] py-8 text-center text-textGray text-sm mt-10">
+            <p>基于 Spotify API 数据分析 • 组员：Group 3</p>
+        </footer>
+    </main>
+
+    <script>
+        // ======= 1. 开屏点击进入逻辑 =======
+        const enterBtn = document.getElementById('enter-btn');
+        const startScreen = document.getElementById('start-screen');
+        const mainContent = document.getElementById('main-content');
+
+        enterBtn.addEventListener('click', () => {
+            // 点击后按钮提供一个缩小的回弹反馈
+            enterBtn.style.transform = 'scale(0.95)';
+            
+            setTimeout(() => {
+                // 淡出黑色的开屏层
+                startScreen.style.opacity = '0';
+                
+                setTimeout(() => {
+                    startScreen.style.display = 'none';
+                    // 显示主内容并触发模块的级联上升动画
+                    mainContent.classList.remove('hidden');
+                    mainContent.classList.add('flex');
+                    
+                    setTimeout(() => {
+                        document.querySelectorAll('.fade-up').forEach((el, index) => {
+                            setTimeout(() => el.classList.add('visible'), index * 150);
+                        });
+                    }, 100);
+                }, 700); // 等待淡出动画完成
+            }, 150);
+        });
+
+        // ======= 2. 扑克牌交互核心逻辑 =======
+        const cards = document.querySelectorAll('.playing-card');
+        let activeCardIndex = -1;
+
+        function layoutCards() {
+            const isMobile = window.innerWidth < 768;
+            const xOffset = isMobile ? 35 : 65; 
+            const yOffset = isMobile ? 8 : 15;
+            const rotOffset = isMobile ? 4 : 7;
+            const topOffset = 40; 
+
+            cards.forEach((card, index) => {
+                if (activeCardIndex === -1) {
+                    let offset = index - 2.5; 
+                    card.style.setProperty('--tx', `${offset * xOffset}px`);
+                    card.style.setProperty('--base-ty', `${Math.abs(offset) * yOffset + topOffset}px`);
+                    card.style.setProperty('--ty', `var(--base-ty)`);
+                    card.style.setProperty('--s', `1`);
+                    card.style.setProperty('--r', `${offset * rotOffset}deg`);
+                    card.style.setProperty('--z', index);
+                    
+                    card.classList.remove('is-active');
+                    card.style.filter = 'brightness(0.7) drop-shadow(0 10px 15px rgba(0,0,0,0.5))'; 
+                } else {
+                    if (index === activeCardIndex) {
+                        card.style.setProperty('--tx', `0px`);
+                        card.style.setProperty('--base-ty', `${-20 + topOffset}px`);
+                        card.style.setProperty('--ty', `var(--base-ty)`);
+                        card.style.setProperty('--s', isMobile ? `1.1` : `1.25`);
+                        card.style.setProperty('--r', `0deg`);
+                        card.style.setProperty('--z', 50);
+                        
+                        card.classList.add('is-active');
+                        card.style.filter = 'brightness(1) drop-shadow(0 20px 40px rgba(29, 185, 84, 0.4))';
+                    } else {
+                        let offset = index - activeCardIndex;
+                        let sideDist = isMobile ? 130 : 250;
+                        let extraShift = isMobile ? 20 : 40;
+                        let targetX = Math.sign(offset) * sideDist + offset * extraShift;
+                        
+                        card.style.setProperty('--tx', `${targetX}px`);
+                        card.style.setProperty('--base-ty', `${40 + topOffset}px`);
+                        card.style.setProperty('--ty', `var(--base-ty)`);
+                        card.style.setProperty('--s', `0.85`);
+                        card.style.setProperty('--r', `${Math.sign(offset) * 6}deg`);
+                        card.style.setProperty('--z', 10 - Math.abs(offset));
+                        
+                        card.classList.remove('is-active');
+                        card.style.filter = 'brightness(0.25) blur(3px)';
+                    }
+                }
+            });
+        }
+
+        cards.forEach((card, index) => {
+            card.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (activeCardIndex === index) {
+                    activeCardIndex = -1;
+                } else {
+                    activeCardIndex = index;
+                }
+                layoutCards();
+            });
+        });
+
+        document.addEventListener('click', () => {
+            if (activeCardIndex !== -1) {
+                activeCardIndex = -1;
+                layoutCards();
+            }
+        });
+
+        window.addEventListener('resize', layoutCards);
+        layoutCards();
+
+
+        // ======= 3. 歌手气泡与音频播放逻辑 =======
+        
+        // 现已修改为读取完全本地的 .jpg 图片和本地 .mp3 文件。
+        const topArtists = [
+            { name: "Billie Eilish", song: "BIRDS OF A FEATHER", sizeClass: "w-36 h-36 md:w-40 md:h-40", img: "Billie Eilish.png", audio: "Billie Eilish - BIRDS OF A FEATHER.mp3", delay: "delay-4" },
+            { name: "Drake", song: "Toosie Slide", sizeClass: "w-40 h-40 md:w-48 md:h-48", img: "Drake.png", audio: "Drake - Toosie Slide.mp3", delay: "delay-1" },
+            { name: "Ariana Grande", song: "thank u, next", sizeClass: "w-36 h-36 md:w-40 md:h-40", img: "Ariana Grande.png", audio: "Ariana Grande - thank u, next.mp3", delay: "delay-2" },
+            { name: "Khalid", song: "Location", sizeClass: "w-28 h-28 md:w-32 md:h-32", img: "Khalid.png", audio: "Khalid - American Teen.mp3", delay: "delay-2" },
+            { name: "Ed Sheeran", song: "Galway Girl", sizeClass: "w-32 h-32 md:w-36 md:h-36", img: "Ed Sheeran.png", audio: "Ed Sheeran - Galway Girl.mp3", delay: "delay-1" },
+            { name: "Tones and I", song: "Dance Monkey", sizeClass: "w-40 h-40 md:w-48 md:h-48", img: "Tones and I.png", audio: "Tones and I - Dance Monkey.mp3", delay: "delay-3" },
+            { name: "Juice WRLD", song: "All Girls Are The Same", sizeClass: "w-24 h-24 md:w-28 md:h-28", img: "Juice WRLD.png", audio: "Juice WRLD - All Girls Are The Same.mp3", delay: "delay-4" },
+            { name: "Post Malone", song: "Better Now", sizeClass: "w-32 h-32 md:w-36 md:h-36", img: "Post Malone.png", audio: "Post Malone - Better Now.mp3", delay: "delay-5" },
+            { name: "The Weeknd", song: "Starboy.", sizeClass: "w-28 h-28 md:w-32 md:h-32", img: "The Weeknd.png", audio: "The Weeknd - Starboy..mp3", delay: "delay-3" },
+            { name: "Maroon 5", song: "Sugar", sizeClass: "w-24 h-24 md:w-28 md:h-28", img: "Maroon 5.png", audio: "Maroon 5 - Sugar.mp3", delay: "delay-5" }
+        ];
+
+        const bubbleContainer = document.getElementById('bubbles-wrapper');
+        const audioPlayer = document.getElementById('global-audio-player');
+        let currentPlayingBubble = null;
+
+        // 动态生成气泡 HTML
+        topArtists.forEach((artist) => {
+            const bubbleHTML = `
+                <div class="artist-bubble ${artist.sizeClass} ${artist.delay}" data-audio="${artist.audio}">
+                    <div class="bubble-img-wrapper" style="position: relative;">
+                        <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#666; font-size:12px; text-align:center; padding:10px; z-index:1;">
+                            未找到<br>${artist.img}
+                        </div>
+                        <img src="${artist.img}" alt="${artist.name}" style="position:relative; z-index:2; width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'">
+                    </div>
+                    <!-- 播放波纹动画 -->
+                    <div class="playing-indicator">
+                        <span></span><span></span><span></span>
+                    </div>
+                    <div class="artist-label">
+                        <div class="artist-name">${artist.name}</div>
+                        <div class="song-title">🎵 正在播放: ${artist.song}</div>
+                    </div>
+                </div>
+            `;
+            bubbleContainer.innerHTML += bubbleHTML;
+        });
+
+        // 绑定播放事件
+        const allBubbles = document.querySelectorAll('.artist-bubble');
+        
+        allBubbles.forEach(bubble => {
+            bubble.addEventListener('click', function() {
+                const audioSrc = this.getAttribute('data-audio');
+                
+                // 1. 如果点击的是正在播放的气泡 -> 暂停
+                if (this === currentPlayingBubble && !audioPlayer.paused) {
+                    audioPlayer.pause();
+                    this.classList.remove('is-playing');
+                    return;
+                }
+
+                // 2. 如果点击了新的气泡 -> 停止旧的，播放新的
+                allBubbles.forEach(b => b.classList.remove('is-playing')); // 移除所有的高亮
+                this.classList.add('is-playing'); // 高亮当前
+                currentPlayingBubble = this;
+
+                // 设置本地音乐并播放
+                audioPlayer.src = audioSrc;
+                audioPlayer.play().catch(e => {
+                    console.error("音乐播放失败：可能是你还没放入对应的MP3文件，或者名字没写对哦！", e);
+                });
+            });
+        });
+
+        // 当歌曲自然播放完毕时，取消气泡的高亮旋转
+        audioPlayer.addEventListener('ended', () => {
+            if (currentPlayingBubble) {
+                currentPlayingBubble.classList.remove('is-playing');
+            }
+        });
+
+    </script>
+</body>
+</html>
